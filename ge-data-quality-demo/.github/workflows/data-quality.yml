@@ -1,0 +1,109 @@
+name: Data Quality Pipeline
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  data-quality:
+    name: Seed → Profile → Check → Triage
+    runs-on: ubuntu-latest
+
+    steps:
+      # -----------------------------------------------------------------------
+      # 1. Checkout
+      # -----------------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # -----------------------------------------------------------------------
+      # 2. Python setup
+      # -----------------------------------------------------------------------
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # -----------------------------------------------------------------------
+      # 3. Seed the database
+      # -----------------------------------------------------------------------
+      - name: Seed orders.db
+        run: python data/seed_db.py
+
+      # -----------------------------------------------------------------------
+      # 4. Agent 1 — Profile & Suggest
+      #    Uploads suggested_suite.py as a build artifact so reviewers can
+      #    inspect the proposals without having to run anything locally.
+      # -----------------------------------------------------------------------
+      - name: Run profiling agent
+        run: python agents/profile_and_suggest.py
+        env:
+          # Optional — add as a repository secret to enable LLM review
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+      - name: Upload suggested suite
+        uses: actions/upload-artifact@v4
+        with:
+          name: suggested-suite
+          path: gx_checks/suggested_suite.py
+          if-no-files-found: warn
+
+      # -----------------------------------------------------------------------
+      # 5. GX Checkpoint — run the hand-reviewed suite
+      #    continue-on-error: true so that step 6 (triage) always runs even
+      #    when checks fail.  The overall job still fails at the end.
+      # -----------------------------------------------------------------------
+      - name: Run GX checks
+        id: gx_checks
+        run: python gx_checks/run_checks.py
+        continue-on-error: true
+
+      - name: Upload GX result JSON
+        uses: actions/upload-artifact@v4
+        with:
+          name: gx-result
+          path: gx_checks/last_result.json
+          if-no-files-found: warn
+
+      # -----------------------------------------------------------------------
+      # 6. Agent 2 — Triage failures
+      #    Only runs when there were failures (last_result.json exists and
+      #    GX step did not succeed).  Output goes into $GITHUB_STEP_SUMMARY
+      #    so it's visible directly in the Actions UI.
+      # -----------------------------------------------------------------------
+      - name: Run triage agent
+        if: steps.gx_checks.outcome == 'failure'
+        run: |
+          python agents/triage_failures.py | tee triage_output.txt
+          echo "## :x: Data Quality Failures" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          cat gx_checks/triage_report.md >> $GITHUB_STEP_SUMMARY
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+      - name: Upload triage report
+        if: steps.gx_checks.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: triage-report
+          path: |
+            gx_checks/triage_report.md
+            gx_checks/slack_summary.md
+          if-no-files-found: ignore
+
+      # -----------------------------------------------------------------------
+      # 7. Fail the build if GX checks failed
+      #    This is a deliberate step after triage so that triage always runs,
+      #    but the overall workflow status still reflects the check result.
+      # -----------------------------------------------------------------------
+      - name: Fail build if checks failed
+        if: steps.gx_checks.outcome == 'failure'
+        run: |
+          echo "GX checks failed. See triage report in the step summary above."
+          exit 1
