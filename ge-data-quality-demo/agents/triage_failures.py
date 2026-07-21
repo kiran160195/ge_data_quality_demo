@@ -204,27 +204,20 @@ def parse_failures(result_dict: dict) -> list[TriagedFailure]:
 
 def format_report(failures: list[TriagedFailure], total_expectations: int) -> str:
     lines: list[str] = []
-    lines.append("=" * 70)
-    lines.append("  DATA QUALITY TRIAGE REPORT")
-    lines.append("=" * 70)
-    lines.append(
-        f"  {len(failures)} of {total_expectations} expectations FAILED\n"
-    )
+    lines.append("# Data Quality Triage Report")
+    lines.append(f"\n{len(failures)} of {total_expectations} expectations failed.\n")
 
     for i, f in enumerate(failures, start=1):
-        lines.append(f"[{i}] [{f.priority}] {f.category}")
-        lines.append(f"     Column    : {f.column}")
-        lines.append(f"     Check     : {f.expectation_type}")
+        lines.append(f"## {i}. [{f.priority}] `{f.column}` -- {f.expectation_type}")
         if f.unexpected_count is not None:
-            pct = f"({f.unexpected_percent:.1f}%)" if f.unexpected_percent is not None else ""
-            lines.append(f"     Failures  : {f.unexpected_count} rows {pct}")
+            pct = f" ({f.unexpected_percent:.1f}%)" if f.unexpected_percent is not None else ""
+            lines.append(f"- Affected rows: {f.unexpected_count}{pct}")
         if f.partial_unexpected_list:
             sample = f.partial_unexpected_list[:5]
-            lines.append(f"     Sample    : {sample}")
-        lines.append(f"     Next step : {f.next_step}")
+            lines.append(f"- Sample values: `{sample}`")
+        lines.append(f"- Suggested next step: {f.next_step}")
         lines.append("")
 
-    lines.append("=" * 70)
     return "\n".join(lines)
 
 
@@ -305,7 +298,7 @@ def triage(result_file: str = DEFAULT_RESULT_FILE) -> None:
     # Write the report to a file for CI artifact upload
     report_path = os.path.join(os.path.dirname(result_file), "triage_report.md")
     with open(report_path, "w") as f:
-        f.write("```\n" + report + "\n```\n")
+        f.write(report + "\n")
     print(f"[triage_failures] Report written to {report_path}")
 
     # Optional LLM Slack summary
