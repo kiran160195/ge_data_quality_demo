@@ -21,6 +21,8 @@ For each failure category, a specific suggested next step is included:
 Optional: set ANTHROPIC_API_KEY to have Claude turn the ranked list into a
           Slack-ready incident summary.
 
+Report output (Markdown, HTML, optional Slack summary) is handled by report.py.
+
 Usage
 -----
     # Heuristic triage only
@@ -39,6 +41,8 @@ import os
 import sys
 from dataclasses import dataclass, field
 from typing import Any
+
+from report import format_report, write_reports
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -199,72 +203,6 @@ def parse_failures(result_dict: dict) -> list[TriagedFailure]:
 
 
 # ---------------------------------------------------------------------------
-# Report formatter
-# ---------------------------------------------------------------------------
-
-def format_report(failures: list[TriagedFailure], total_expectations: int) -> str:
-    lines: list[str] = []
-    lines.append("# Data Quality Triage Report")
-    lines.append(f"\n{len(failures)} of {total_expectations} expectations failed.\n")
-
-    for i, f in enumerate(failures, start=1):
-        lines.append(f"## {i}. [{f.priority}] `{f.column}` -- {f.expectation_type}")
-        if f.unexpected_count is not None:
-            pct = f" ({f.unexpected_percent:.1f}%)" if f.unexpected_percent is not None else ""
-            lines.append(f"- Affected rows: {f.unexpected_count}{pct}")
-        if f.partial_unexpected_list:
-            sample = f.partial_unexpected_list[:5]
-            lines.append(f"- Sample values: `{sample}`")
-        lines.append(f"- Suggested next step: {f.next_step}")
-        lines.append("")
-
-    return "\n".join(lines)
-
-
-# ---------------------------------------------------------------------------
-# LLM Slack summary (optional)
-# ---------------------------------------------------------------------------
-
-def llm_slack_summary(failures: list[TriagedFailure], report: str) -> str:
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        return ""
-
-    try:
-        import anthropic  # noqa: PLC0415
-    except ImportError:
-        print(
-            "[triage_failures] `anthropic` package not installed. "
-            "Skipping LLM summary. Run: pip install anthropic",
-            file=sys.stderr,
-        )
-        return ""
-
-    client = anthropic.Anthropic(api_key=api_key)
-
-    prompt = f"""You are a data engineer writing a Slack incident summary for a data quality failure.
-
-Here is the triage report:
-
-{report}
-
-Write a concise Slack message (use Slack markdown: *bold*, _italic_, bullet points with •).
-Include:
-  • A one-line headline with the severity (e.g. ":red_circle: CRITICAL data quality failures detected")
-  • A brief summary of what failed and why it matters
-  • The top 2 action items
-
-Keep it under 300 words. No technical jargon beyond what's necessary."""
-
-    message = client.messages.create(
-        model="claude-opus-4-5",
-        max_tokens=512,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return message.content[0].text
-
-
-# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -292,28 +230,11 @@ def triage(result_file: str = DEFAULT_RESULT_FILE) -> None:
         print("[triage_failures] All expectations passed. Nothing to triage.")
         return
 
-    report = format_report(failures, total)
-    print(report)
+    # Print the ranked report to stdout (captured by CI as the step summary)
+    print(format_report(failures, total))
 
-    # Write the report to a file for CI artifact upload
-    report_path = os.path.join(os.path.dirname(result_file), "triage_report.md")
-    with open(report_path, "w") as f:
-        f.write(report + "\n")
-    print(f"[triage_failures] Report written to {report_path}")
-
-    # Optional LLM Slack summary
-    slack_summary = llm_slack_summary(failures, report)
-    if slack_summary:
-        print("\n--- Slack Summary (LLM) ---")
-        print(slack_summary)
-        slack_path = os.path.join(os.path.dirname(result_file), "slack_summary.md")
-        with open(slack_path, "w") as f:
-            f.write(slack_summary)
-        print(f"[triage_failures] Slack summary written to {slack_path}")
-    else:
-        print(
-            "[triage_failures] No LLM Slack summary (set ANTHROPIC_API_KEY to enable)."
-        )
+    # Write all report files (Markdown, HTML, optional Slack summary)
+    write_reports(failures, total, output_dir=os.path.dirname(result_file))
 
 
 def main() -> None:

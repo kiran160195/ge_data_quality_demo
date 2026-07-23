@@ -94,6 +94,7 @@ jobs:
           name: triage-report
           path: |
             gx_checks/triage_report.md
+            gx_checks/triage_report.html
             gx_checks/slack_summary.md
           if-no-files-found: ignore
 
